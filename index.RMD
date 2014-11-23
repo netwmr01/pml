@@ -1,0 +1,120 @@
+---
+title: "Predicting Quality of Weight Lifting Exercises"
+output: html_document
+---
+
+
+## Synopsis
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self-movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+The goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+
+```{r init, results='hide'}
+library(data.table);
+library(caret);
+```
+
+## Data Processing
+
+###Loading, Cleaning and Transforming
+1) Usernames and timestamps aren't particularly useful for this project, so drop them
+2) Convert columns to numeric
+
+```{r data-processing, results='hide', warning=FALSE}
+pml.training <- fread("pml-training.csv",stringsAsFactors=TRUE, drop=c(1,3:7))
+pml.testing <-  fread("pml-testing.csv",stringsAsFactors=TRUE, drop=c(1,3:7))
+
+pml.training[,user_name:=NULL]
+pml.testing[,user_name:=NULL]
+
+pml.training[, classe:=factor(classe)]
+
+cols.number <- dim(pml.training)[2]
+for (id in c(2L:(cols.number-1))) set(pml.training, j=id, value=as.numeric(pml.training[[id]]))
+for (id in c(2L:(cols.number-1))) set(pml.testing, j=id, value=as.numeric(pml.testing[[id]]))
+```
+
+## Feature Selection
+Remove Columns with high NAs  
+Change classe to factor
+Remove columns with high correlation
+
+In summary, many columns have been discarded. The remaining 45 feature variables were used to predict the variable "classe".    
+
+```{r feature-selection, results='hide'}
+nas <- sapply(2L:(cols.number-1), function(i) {sum(is.na(pml.training[,i, with=FALSE]))})
+colnames.to.drop <- colnames(pml.training)[which(nas != 0) + 1]
+pml.training[,eval(colnames.to.drop) := NULL]
+pml.testing[,eval(colnames.to.drop) := NULL]
+
+classe <- pml.training$classe
+pml.training[,classe:=NULL]
+pml.testing[,problem_id:=NULL]
+
+high.correlation <- findCorrelation(cor(pml.training), 0.90)
+pml.training <- pml.training[, -high.correlation, with=FALSE]
+pml.testing <- pml.testing[, -high.correlation, with=FALSE]
+```
+
+
+## Model Building
+
+The training set needs to be large enough to achieve a relatively high accuracy, and the cross validation set also needs to be large enough to give a good indication of the out of sample error.
+
+The training data set was split up into one portion (80%) for model building, model cohort, and another portion (20%) for cross-validation, cross-validation cohort.
+
+Random forest is chosen as model, once the corss-validation has good performance, we will use both the training and cv set to build the final model to ensure highest accuracy for the testing set. 
+
+```{r model-building, results='hide', cache=TRUE}
+inTrain <- createDataPartition(classe, p=.8, list=FALSE)
+training <- data.frame(pml.training[inTrain[,1], ], classe=classe[inTrain])
+cross.validation <- data.frame(pml.training[-inTrain[,1], ], classe=classe[-inTrain])
+
+set.seed(1)
+model <- train(classe ~., data=training, method="rf", trControl=trainControl(method="cv", number=10), ntrees=1000)
+cross.validation.predict <- predict(model, cross.validation)
+```
+
+
+### Confusion Matrix
+The confusion matrix allows visualization of the performance of an machine learning algorithm - typically a supervised learning. Each column of the matrix represents the instances in a predicted class, while each row represents the instances in an actual (reference) class.
+
+```{r confusion-matrix}
+confusionMatrix <- confusionMatrix(cross.validation.predict, cross.validation$classe)
+confusionMatrix$table
+
+cf.table <- as.data.frame(confusionMatrix$table)
+ggplot(cf.table, aes(x=Reference, y=Prediction), environment=environment()) +
+  geom_tile(fill="white", color="black") +
+  geom_text(aes(label=cf.table$Freq)) +
+  theme(legend.position="none",  panel.background =element_rect(fill='lightgreen') )+
+  xlab("Reference") +                    
+  ylab("Prediction") 
+```
+**Figure 1. Confusion Matrix**
+
+### Accuracy  
+The random forests model has over 99 out of sample accuracy, high sensitivity and specificity accross all classes.
+
+```{r accuracy}
+confusionMatrix$overall
+```
+
+## Prediction
+Finally we retrain the model with all the data to predict the classe on the testing set.
+```{r prediction, results='hide'}
+inTrain <- createDataPartition(classe, p=1, list=FALSE)
+training <- data.frame(pml.training[inTrain[,1], ], classe=classe[inTrain])
+
+
+set.seed(1)
+model <- train(classe ~., data=training, method="rf", trControl=trainControl(method="cv", number=10), ntrees=1000)
+
+
+testing.predict <- predict(model, pml.testing)
+testing.predict
+```
+
+## Summary
+The model used was a random forest algorithm using 1000 trees. CV accuracy > 99%.  The trained algorithm correctly identified 20 out of 20 test cases.
